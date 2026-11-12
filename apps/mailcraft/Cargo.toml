@@ -1,0 +1,57 @@
+[package]
+name = "mailcraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "MailCraft: an Outlook-style mail client built on WordCraft's document engine"
+
+[[bin]]
+name = "mailcraft"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+mailcraft-autoconfig = { path = "../../crates/mail-autoconfig" }
+mailcraft-core = { path = "../../crates/mail-core" }
+mailcraft-window = { path = "../../crates/mail-window" }
+wordcraft-doc = { workspace = true }
+wordcraft-engine = { workspace = true }
+wordcraft-formats = { workspace = true }
+wordcraft-layout = { workspace = true }
+wordcraft-ui-egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
+egui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+mail-parser = "0.11"
+base64 = "0.22"
+ring = "0.17"
+mime_guess = "2"
+regex = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+[build-dependencies]
+# Icon + version info for mailcraft.exe; build.rs only uses it when the target is Windows.
+winresource = "0.1"
+
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+wry = { version = "0.57", default-features = false, features = ["os-webview", "x11"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
+# New-mail and reminder notifications while the window is minimised (it draws nothing then).
+tauri-winrt-notification = "0.7"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rfd = { workspace = true }
+open = "5"
+ureq = "3"
+keyring = { version = "3", features = ["windows-native"] }

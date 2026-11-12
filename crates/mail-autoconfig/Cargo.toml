@@ -1,0 +1,21 @@
+[package]
+name = "mailcraft-autoconfig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "MailCraft: find an email account's IMAP and SMTP settings from its address"
+
+[lints]
+workspace = true
+
+[dependencies]
+quick-xml = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+ureq = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
+hickory-resolver = { version = "0.25", default-features = false, features = ["system-config", "tokio"] }

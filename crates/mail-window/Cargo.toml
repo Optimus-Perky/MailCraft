@@ -1,0 +1,21 @@
+[package]
+name = "mailcraft-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "MailCraft: find one of its own windows by title and lend its native handle (FFI, so its own crate)"
+
+# The workspace forbids unsafe code; finding a window needs the operating system's own calls,
+# so this one small crate allows it (and nothing else does).
+[lints.rust]
+unsafe_code = "allow"
+
+[dependencies]
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11-dl = "2.21"

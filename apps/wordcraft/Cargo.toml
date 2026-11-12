@@ -1,0 +1,27 @@
+[package]
+name = "wordcraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+default-run = "wordcraft"
+description = "WordCraft desktop app"
+
+[lints]
+workspace = true
+
+[dependencies]
+wordcraft-doc = { workspace = true }
+wordcraft-engine = { workspace = true }
+wordcraft-ui-egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links"] }
+egui = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[build-dependencies]
+# Icon + VERSIONINFO for wordcraft.exe; build.rs only uses it when the target is Windows.
+winresource = "0.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rfd = { workspace = true }

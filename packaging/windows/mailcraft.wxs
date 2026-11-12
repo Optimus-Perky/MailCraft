@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MailCraft MSI (WiX 3.14), shipped inside the MailCraft.exe installer (bundle.wxs). Built by
+     packaging/windows/build-installer.sh, which hands it to a Windows host: WiX creates the MSI
+     database through Windows' own msi.dll, so it cannot run on Linux.
+
+     Upgrades happen in place and never take the shortcuts away: they are plain shortcuts to
+     MailCraft.exe (not advertised ones, which point at one build's product code and leave a
+     taskbar pin dead when the next build replaces it), their components keep their GUIDs, and
+     the old version is removed only after the new one is in (afterInstallExecute), so what
+     both share stays put. MailCraft.exe carries the build's version, so the newer file wins.
+
+     Per-machine install into Program Files with a folder picker, Start menu and desktop
+     shortcuts, and MailCraft offered as the app for mailto: links. Accounts (%APPDATA%\MailCraft), the mail cache and the WebView2 profile
+     (%LOCALAPPDATA%\MailCraft) and passwords (Credential Manager) belong to the user and are
+     left alone by an uninstall. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="MailCraft" Language="1033" Version="$(var.Version)"
+           Manufacturer="MailCraft" UpgradeCode="7c1d5b0e-3f4a-4c8e-9b26-5e0d8a41f2c7">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
+             Description="MailCraft $(var.Version)" Comments="Mail and calendar client." />
+    <Media Id="1" Cabinet="mailcraft.cab" EmbedCab="yes" CompressionLevel="high" />
+    <!-- Each build has a higher version (0.3.<commit count>). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of MailCraft is already installed."
+                  Schedule="afterInstallExecute" />
+    <!-- The installer (the bundle) is what Add/Remove Programs lists. -->
+    <Property Id="ARPSYSTEMCOMPONENT" Value="1" />
+
+    <!-- An upgrade goes where the last install went. -->
+    <Property Id="INSTALLDIR" Secure="yes">
+      <RegistrySearch Id="PreviousInstallDir" Root="HKLM" Key="Software\MailCraft" Name="InstallDir" Type="raw" Win64="yes" />
+    </Property>
+
+
+    <Icon Id="mailcraft.ico" SourceFile="$(var.BuildDir)/mailcraft.ico" />
+    <Property Id="ARPPRODUCTICON" Value="mailcraft.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://altcraft.perkin.me.uk/mailcraft" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="MailCraft">
+          <!-- The shortcuts belong to the exe's component, in Program Files (ICE38/ICE43). -->
+          <Component Id="MailCraftExe" Guid="2f6b9a4e-8d31-4b57-a0c2-6e9f13d7b845" Win64="yes">
+            <File Id="mailcraftexe" Name="MailCraft.exe" Source="$(var.BuildDir)/MailCraft.exe" KeyPath="yes">
+              <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="MailCraft"
+                        Description="Mail and calendar" WorkingDirectory="INSTALLDIR" Advertise="no" />
+              <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="MailCraft"
+                        Description="Mail and calendar" WorkingDirectory="INSTALLDIR" Advertise="no" />
+            </File>
+            <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\MailCraft.exe"
+                           Value="[#mailcraftexe]" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\MailCraft" Name="InstallDir" Value="[INSTALLDIR]" Type="string" />
+          </Component>
+          <!-- MailCraft as an email app Windows can pick for mailto: links (Settings > Apps >
+               Default apps). Windows does not let an installer make itself the default; it
+               asks the user the first time a link is clicked, or they choose it there. -->
+          <Component Id="MailtoHandler" Guid="5a0e8c37-9b14-4d62-8f71-c2d39e6b0a84" Win64="yes">
+            <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.mailto" Value="MailCraft email link" Type="string" KeyPath="yes" />
+            <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.mailto" Name="URL Protocol" Value="" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.mailto\DefaultIcon" Value="&quot;[#mailcraftexe]&quot;,0" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\Classes\MailCraft.mailto\shell\open\command" Value="&quot;[#mailcraftexe]&quot; &quot;%1&quot;" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\Clients\Mail\MailCraft" Value="MailCraft" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\Clients\Mail\MailCraft\shell\open\command" Value="&quot;[#mailcraftexe]&quot;" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\Clients\Mail\MailCraft\Capabilities" Name="ApplicationName" Value="MailCraft" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\Clients\Mail\MailCraft\Capabilities" Name="ApplicationDescription" Value="Mail and calendar" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\Clients\Mail\MailCraft\Capabilities" Name="ApplicationIcon" Value="&quot;[#mailcraftexe]&quot;,0" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\Clients\Mail\MailCraft\Capabilities\URLAssociations" Name="mailto" Value="MailCraft.mailto" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\RegisteredApplications" Name="MailCraft" Value="Software\Clients\Mail\MailCraft\Capabilities" Type="string" />
+          </Component>
+          <!-- The GNU build links WebView2 dynamically: without this beside the exe it will
+               not start (0xC0000135). -->
+          <Component Id="WebView2Loader" Guid="9e3c7d21-54ab-4f86-b1e8-0a7d2c96f413" Win64="yes">
+            <File Id="webview2loader" Name="WebView2Loader.dll" Source="$(var.BuildDir)/WebView2Loader.dll" KeyPath="yes" />
+          </Component>
+          <Component Id="Licences" Guid="c48a1f6d-27e9-4b03-8d5c-3f1e9b7a0d62" Win64="yes">
+            <File Id="licmit" Name="LICENSE-MIT.txt" Source="$(var.BuildDir)/LICENSE-MIT" KeyPath="yes" />
+            <File Id="licapache" Name="LICENSE-APACHE.txt" Source="$(var.BuildDir)/LICENSE-APACHE" />
+            <File Id="notice" Name="NOTICE.txt" Source="$(var.BuildDir)/NOTICE" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <Feature Id="Main" Title="MailCraft" Level="1">
+      <ComponentRef Id="MailCraftExe" />
+      <ComponentRef Id="WebView2Loader" />
+      <ComponentRef Id="MailtoHandler" />
+      <ComponentRef Id="Licences" />
+    </Feature>
+  </Product>
+</Wix>

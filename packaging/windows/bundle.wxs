@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The MailCraft installer: MailCraft.exe, a WiX Burn bundle carrying mailcraft.msi. Its
+     version is in the file's properties (Details tab), not its name, and it is the one entry
+     in Add/Remove Programs. A newer one upgrades in place; the folder picker is on the
+     Options page, and an upgrade keeps the folder MailCraft is already in. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:bal="http://schemas.microsoft.com/wix/BalExtension"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Bundle Name="MailCraft" Version="$(var.Version)" Manufacturer="MailCraft"
+          UpgradeCode="3b6f0e2a-9c4d-4a71-8e15-d27c6a90b3f4"
+          IconSourceFile="$(var.BuildDir)/mailcraft.ico"
+          AboutUrl="https://altcraft.perkin.me.uk/mailcraft"
+          Copyright="Copyright (c) the MailCraft authors. MIT OR Apache-2.0.">
+    <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.RtfLicense">
+      <bal:WixStandardBootstrapperApplication LicenseFile="$(var.BuildDir)/notice.rtf"
+          LogoFile="$(var.BuildDir)/logo.png" SuppressOptionsUI="no"
+          LaunchTarget="[InstallFolder]\MailCraft.exe" />
+    </BootstrapperApplicationRef>
+
+    <!-- Where it goes: Program Files, unless it is already installed somewhere. A registry
+         search that finds nothing UNSETS its variable, so the folder is only read when it
+         exists: otherwise a first install's Launch button points at "\MailCraft.exe". -->
+    <Variable Name="InstallFolder" Type="string" Value="[ProgramFiles64Folder]MailCraft" />
+    <util:RegistrySearch Id="PreviousFolderExists" Root="HKLM" Key="Software\MailCraft" Value="InstallDir"
+                         Result="exists" Variable="PreviousFolderExists" Win64="yes" />
+    <util:RegistrySearch Id="PreviousFolder" After="PreviousFolderExists" Condition="PreviousFolderExists"
+                         Root="HKLM" Key="Software\MailCraft" Value="InstallDir" Variable="InstallFolder" Win64="yes" />
+
+    <Chain>
+      <MsiPackage Id="MailCraftMsi" SourceFile="$(var.BuildDir)/mailcraft.msi" Vital="yes" DisplayInternalUI="no" Compressed="yes">
+        <MsiProperty Name="INSTALLDIR" Value="[InstallFolder]" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>
