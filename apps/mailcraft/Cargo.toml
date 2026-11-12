@@ -38,6 +38,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 [build-dependencies]
 # Icon + version info for mailcraft.exe; build.rs only uses it when the target is Windows.
 winresource = "0.1"
+# Reads the built-in Google registration (MAILCRAFT_OAUTH_FILE) at build time.
+serde_json = { workspace = true }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 wry = { version = "0.57", default-features = false, features = ["os-webview", "x11"] }

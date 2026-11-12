@@ -377,10 +377,10 @@ mod tests {
             to: vec!["a@example.org".into()],
             text: "Hi".into(),
             reply_to: Some("office@example.com".into()),
-            organisation: Some("Example Prints".into()),
+            organisation: Some("Perkin Prints".into()),
             ..Default::default()
         };
         let id = String::from_utf8(build(&id).unwrap().formatted()).unwrap();
-        assert!(id.contains("Reply-To: office@example.com") && id.contains("Organization: Example Prints"), "{id}");
+        assert!(id.contains("Reply-To: office@example.com") && id.contains("Organization: Perkin Prints"), "{id}");
     }
 }

@@ -27,14 +27,27 @@ const MAX_STACK: usize = 256;
 
 /// Decode an entity body (`amp`, `#38`, `#x26`) to its text.
 pub fn decode_entity(name: &str) -> Option<String> {
+    decode_char(name).map(String::from)
+}
+
+fn decode_char(name: &str) -> Option<char> {
     if let Some(num) = name.strip_prefix('#') {
-        let v = if let Some(h) = num.strip_prefix(['x', 'X']) { u32::from_str_radix(h, 16).ok()? } else { num.parse::<u32>().ok()? };
+        let (digits, radix) = match num.strip_prefix(['x', 'X']) {
+            Some(h) => (h, 16),
+            None => (num, 10),
+        };
+        // Digits only: `u32::from_str_radix` would also take a sign (upstream #3249).
+        if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+            return None;
+        }
+        // Too many digits is out of range, which browsers show as U+FFFD.
+        let v = u32::from_str_radix(digits, radix).unwrap_or(0x11_0000);
         let c = match v {
             0 => '\u{FFFD}',
             0x80..=0x9F => crate::txt::cp1252(v as u8),
             _ => char::from_u32(v).unwrap_or('\u{FFFD}'),
         };
-        return Some(c.to_string());
+        return Some(c);
     }
     let c = match name {
         "amp" | "AMP" => '&',
@@ -130,11 +143,54 @@ pub fn decode_entity(name: &str) -> Option<String> {
         "zwnj" => '\u{200C}',
         _ => return None,
     };
-    Some(c.to_string())
+    Some(c)
 }
 
-/// Replace entity references in `s`.
+/// Legacy names HTML5 also decodes without a `;` (only those [`decode_char`] knows), sorted by
+/// bytes (upstream #4820).
+const BARE_NAMES: &[&str] = &[
+    "AElig", "AMP", "Aring", "Auml", "Ccedil", "Eacute", "GT", "LT", "Ntilde", "Oslash", "Ouml", "QUOT", "Uuml", "aacute", "acirc", "aelig",
+    "agrave", "amp", "aring", "auml", "ccedil", "cent", "copy", "deg", "divide", "eacute", "ecirc", "egrave", "frac12", "frac14", "frac34", "gt",
+    "iacute", "iexcl", "iquest", "laquo", "lt", "middot", "nbsp", "ntilde", "oacute", "oslash", "ouml", "para", "plusmn", "pound", "quot", "raquo",
+    "reg", "sect", "shy", "szlig", "times", "uacute", "uuml", "yen",
+];
+
+/// A reference written without its `;` at the start of `after` (the text after `&`): a numeric
+/// one, or the longest legacy name. In attribute values a name followed by `=` or an alphanumeric
+/// stays text, so query strings (`?a=1&copy=2`) keep their meaning (upstream #4820).
+fn bare_reference(after: &str, attr: bool) -> Option<(char, usize)> {
+    if let Some(num) = after.strip_prefix('#') {
+        let hex = num.starts_with(['x', 'X']);
+        let radix = if hex { 16 } else { 10 };
+        let skip = usize::from(hex);
+        let n = num.get(skip..)?.bytes().take_while(|b| char::from(*b).is_digit(radix)).count();
+        if n == 0 {
+            return None;
+        }
+        let len = 1 + skip + n;
+        return decode_char(after.get(..len)?).map(|c| (c, len));
+    }
+    // Legacy names are 2 to 6 ASCII alphanumerics: try the longest prefix first.
+    let run = after.bytes().take(6).take_while(u8::is_ascii_alphanumeric).count();
+    let len = (2..=run).rev().find(|&l| after.get(..l).is_some_and(|p| BARE_NAMES.binary_search(&p).is_ok()))?;
+    let next = after.as_bytes().get(len);
+    if attr && next.is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'=') {
+        return None;
+    }
+    decode_char(after.get(..len)?).map(|c| (c, len))
+}
+
+/// Replace entity references in text `s`.
 pub fn unescape(s: &str) -> String {
+    unescape_in(s, false)
+}
+
+/// Replace entity references in an attribute value `s`.
+pub fn unescape_attr(s: &str) -> String {
+    unescape_in(s, true)
+}
+
+fn unescape_in(s: &str, attr: bool) -> String {
     if !s.contains('&') {
         return s.to_string();
     }
@@ -143,11 +199,17 @@ pub fn unescape(s: &str) -> String {
     while let Some(k) = rest.find('&') {
         out.push_str(&rest[..k]);
         let after = &rest[k + 1..];
-        let end = after.find(';').filter(|e| *e <= 32);
-        match end.and_then(|e| decode_entity(&after[..e]).map(|t| (t, e))) {
-            Some((t, e)) => {
-                out.push_str(&t);
-                rest = &after[e + 1..];
+        // An entity name is short; looking further would rescan the whole text for every stray
+        // `&` (upstream #355).
+        let mut cut = after.len().min(33);
+        while !after.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let end = after.get(..cut).and_then(|w| w.find(';'));
+        match end.and_then(|e| decode_char(after.get(..e)?).map(|c| (c, e + 1))).or_else(|| bare_reference(after, attr)) {
+            Some((c, e)) => {
+                out.push(c);
+                rest = after.get(e..).unwrap_or("");
             }
             None => {
                 out.push('&');
@@ -206,6 +268,27 @@ impl Lexer<'_> {
         found.map(|k| start + k).unwrap_or(self.s.len())
     }
 
+    /// Skip past the next matching end tag `</tag...>` (ASCII case-insensitive), or to the end:
+    /// `</scripted>` doesn't end a `script` (upstream #2257).
+    fn skip_past_end_tag(&mut self, tag: &str) {
+        let prefix = format!("</{tag}");
+        let p = prefix.as_bytes();
+        while self.pos < self.s.len() {
+            let hay = self.rest().as_bytes();
+            let Some(k) = hay.windows(p.len().max(1)).position(|w| w.eq_ignore_ascii_case(p)) else {
+                self.pos = self.s.len();
+                return;
+            };
+            let after_tag = k + p.len();
+            if hay.get(after_tag).is_none_or(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/') {
+                self.pos += after_tag;
+                self.skip_past(">");
+                return;
+            }
+            self.pos += k + 2;
+        }
+    }
+
     fn next(&mut self) -> Option<Tok> {
         let rest = self.rest();
         if rest.is_empty() {
@@ -219,8 +302,16 @@ impl Lexer<'_> {
         }
         let b = rest.as_bytes();
         if rest.starts_with("<!--") {
-            self.pos += 4;
-            self.skip_past("-->");
+            // `<!-->` and `<!--->` are whole (empty) comments, as browsers read them; taken as an
+            // opening `<!--` they hid the rest of the message (upstream #5040).
+            if rest.starts_with("<!-->") {
+                self.pos += 5;
+            } else if rest.starts_with("<!--->") {
+                self.pos += 6;
+            } else {
+                self.pos += 4;
+                self.skip_past("-->");
+            }
             return Some(Tok::Text(String::new()));
         }
         if rest.starts_with("<!") || rest.starts_with("<?") {
@@ -289,7 +380,7 @@ impl Lexer<'_> {
                     Some(&q) if q == b'"' || q == b'\'' => {
                         let v0 = i + 1;
                         let e = rest.get(v0..).and_then(|r| r.find(q as char)).map(|k| v0 + k).unwrap_or(rest.len());
-                        val = unescape(rest.get(v0..e).unwrap_or(""));
+                        val = unescape_attr(rest.get(v0..e).unwrap_or(""));
                         i = e + 1;
                     }
                     _ => {
@@ -297,7 +388,7 @@ impl Lexer<'_> {
                         while b.get(i).is_some_and(|c| !c.is_ascii_whitespace() && *c != b'>') {
                             i += 1;
                         }
-                        val = unescape(rest.get(v0..i).unwrap_or(""));
+                        val = unescape_attr(rest.get(v0..i).unwrap_or(""));
                     }
                 }
             }
@@ -490,6 +581,19 @@ const SHADOW_CSS: &str = "1px 1px 2px #808080";
 const EMBOSS_CSS: &str = "-1px -1px 0 #ffffff,1px 1px 0 #7f7f7f";
 const ENGRAVE_CSS: &str = "1px 1px 0 #ffffff,-1px -1px 0 #7f7f7f";
 
+/// A declaration's value without `!important`, in any case and spacing (`! IMPORTANT`); a
+/// trailing match on the exact lower-case form let the others through as part of the value
+/// (upstream #2258).
+fn strip_important(v: &str) -> &str {
+    let s = v.trim();
+    if let Some(pos) = s.rfind('!')
+        && s.get(pos + 1..).is_some_and(|a| a.trim().eq_ignore_ascii_case("important"))
+    {
+        return s.get(..pos).unwrap_or(s).trim();
+    }
+    s
+}
+
 /// Apply a `style` attribute to formatting / block properties. `strike_el`: the element is
 /// `s`/`strike`/`del`, so a decoration style (double) belongs to the strikethrough.
 fn apply_style(css: &str, f: &mut Fmt, align: &mut Option<Align>, preserve: &mut bool, page_break: &mut bool, strike_el: bool) {
@@ -498,7 +602,7 @@ fn apply_style(css: &str, f: &mut Fmt, align: &mut Option<Align>, preserve: &mut
     for decl in css.split(';').take(64) {
         let Some((k, v)) = decl.split_once(':') else { continue };
         let k = k.trim().to_ascii_lowercase();
-        let v = v.trim().trim_end_matches("!important").trim();
+        let v = strip_important(v);
         let lv = v.to_ascii_lowercase();
         match k.as_str() {
             "font-weight" => f.bold = lv.starts_with("bold") || lv.parse::<u32>().is_ok_and(|w| w >= 600),
@@ -663,7 +767,7 @@ fn block_css(css: &str) -> BlockCss {
     for decl in css.split(';').take(64) {
         let Some((k, v)) = decl.split_once(':') else { continue };
         let k = k.trim().to_ascii_lowercase();
-        let v = v.trim().trim_end_matches("!important").trim();
+        let v = strip_important(v);
         match k.as_str() {
             "margin" => {
                 let [t, r, bt, l] = css_box(v);
@@ -893,10 +997,12 @@ impl Builder {
         if self.stack.iter().any(|e| e.skip) {
             return;
         }
+        // A `<title>` takes its text wherever it stands, not only in `<head>` (upstream #4725).
+        if let Some(title) = &mut self.title {
+            title.push_str(t);
+            return;
+        }
         if self.in_head() {
-            if let Some(title) = &mut self.title {
-                title.push_str(t);
-            }
             return;
         }
         if t.is_empty() {
@@ -1003,7 +1109,11 @@ impl Builder {
                     if let Some(r) = t.row.take() {
                         t.rows.push(r);
                     }
-                    let mut ft = FTable { rows: t.rows.into_iter().filter(|r| !r.is_empty()).collect(), widths: Vec::new() };
+                    // Keep at most MAX_ROWS rows (the model drops the rest anyway): bounds the
+                    // O(rows × rowspan) work of `insert_covered` on a table of millions of `<tr>`
+                    // (upstream #1235).
+                    let rows: Vec<_> = t.rows.into_iter().filter(|r| !r.is_empty()).take(wordcraft_doc::table::MAX_ROWS).collect();
+                    let mut ft = FTable { rows, widths: Vec::new() };
                     if !ft.rows.is_empty() {
                         ft.insert_covered();
                         self.container().push(FBlock::Table(ft));
@@ -1189,9 +1299,9 @@ impl Builder {
                 }
             }
             "a" => {
-                if let Some(h) =
-                    attr(attrs, "href").filter(|h| !h.trim().is_empty() && !h.trim_start().to_ascii_lowercase().starts_with("javascript:"))
-                {
+                // Only web, mail, bookmark and relative targets stay links: a message's link to a
+                // file, a share (NTLM leak) or a protocol handler is kept as text (upstream #681, #1235).
+                if let Some(h) = attr(attrs, "href").filter(|h| wordcraft_doc::link::is_safe_href(h)) {
                     fmt.link = Some(h.trim().to_string());
                 }
             }
@@ -1325,8 +1435,7 @@ pub fn parse(s: &str) -> Flow {
             Tok::Text(t) => b.text(&t),
             Tok::Start { name, attrs, self_close } => {
                 if matches!(name.as_str(), "script" | "style" | "noscript" | "template" | "textarea") && !self_close {
-                    lx.skip_past(&format!("</{name}"));
-                    lx.skip_past(">");
+                    lx.skip_past_end_tag(&name);
                     continue;
                 }
                 b.start(&name, &attrs, self_close);
@@ -1397,7 +1506,8 @@ pub fn inlines_html(inlines: &[Inline]) -> String {
             Inline::Text(t, f) => {
                 let mut open = String::new();
                 let mut close: Vec<&str> = Vec::new();
-                if let Some(l) = &f.link {
+                // A script or other non-web target is written as plain text (upstream #681).
+                if let Some(l) = f.link.as_deref().filter(|l| wordcraft_doc::link::is_safe_href(l)) {
                     open.push_str(&format!("<a href=\"{}\">", esc(l)));
                     close.push("</a>");
                 }
@@ -1525,7 +1635,11 @@ fn underline_css(u: Underline) -> Option<&'static str> {
 
 /// A font family with a generic fallback, for readers who don't have the font.
 fn font_stack(fam: &str) -> String {
-    let f: String = fam.chars().filter(|c| !matches!(c, '\'' | '"' | ';' | '<' | '>' | '{' | '}')).collect();
+    // A name from a received message ends up in the reply's CSS: drop what could end the quoted
+    // string or the declaration. A backslash escapes the closing quote and control characters
+    // (newlines) end it in some readers (upstream #3862 escapes them; dropping keeps the plain
+    // names mail clients understand).
+    let f: String = fam.chars().filter(|c| !matches!(c, '\'' | '"' | ';' | '<' | '>' | '{' | '}' | '\\') && !c.is_control()).collect();
     let l = f.to_ascii_lowercase();
     const SERIF: [&str; 14] = [
         "times",
@@ -2349,6 +2463,12 @@ mod tests {
             String::from_utf8(crate::txt::export(&doc_of(vec![Paragraph::with_text("shout", CharProps { caps: Some(true), ..Default::default() })])))
                 .unwrap();
         assert_eq!(t, "SHOUT");
+    }
+
+    #[test]
+    fn bare_names_are_sorted_and_known() {
+        assert!(BARE_NAMES.windows(2).all(|w| w[0] < w[1]));
+        assert!(BARE_NAMES.iter().all(|n| (2..=6).contains(&n.len()) && decode_char(n).is_some()));
     }
 
     #[test]

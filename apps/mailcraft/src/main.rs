@@ -11,6 +11,8 @@ mod calendar;
 mod darkmail;
 mod foldertree;
 mod history;
+#[cfg(test)]
+mod hostile;
 mod htmlview;
 mod invite;
 mod links;
@@ -461,6 +463,20 @@ fn editor(html: &str, room: usize) -> WordApp {
     app
 }
 
+/// The read-only WordCraft session behind an opened message: Web Layout, no rulers or proofing.
+/// Built on the UI thread for every message opened, so its import and layout must stay bounded
+/// on hostile mail (see `hostile` tests).
+fn reader_session(html: &str) -> Session {
+    let mut doc = wordcraft_formats::html::import(html);
+    doc.ensure_nonempty();
+    doc.settings.protection = Some("readOnly".into());
+    let mut session = Session::new(doc);
+    session.view.mode = wordcraft_layout::ViewMode::Web;
+    session.view.ruler = false;
+    session.view.proofing = false;
+    session
+}
+
 /// Files to attach: a picker (several at once), or for automated tests the paths in
 /// MAILCRAFT_TEST_PICK (separated by ';').
 fn pick_files() -> Vec<std::path::PathBuf> {
@@ -763,7 +779,7 @@ fn day_label(d: &Option<String>, today: chrono::NaiveDate) -> String {
     }
 }
 
-/// Up to two initials for a sender picture ("Sam Taylor" ST, "news@shop.example" N).
+/// Up to two initials for a sender picture ("Sam Taylor" MP, "news@shop.example" N).
 fn initials(name: &str) -> String {
     let name = name.split('@').next().unwrap_or(name);
     let words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
@@ -3613,14 +3629,7 @@ impl MailApp {
                 _ => v.to_string(),
             }
         });
-        let mut doc = wordcraft_formats::html::import(&html);
-        doc.ensure_nonempty();
-        doc.settings.protection = Some("readOnly".into());
-        let mut session = Session::new(doc);
-        session.view.mode = wordcraft_layout::ViewMode::Web;
-        session.view.ruler = false;
-        session.view.proofing = false;
-        let mut reader = WordApp::new(session, Services::default());
+        let mut reader = WordApp::new(reader_session(&html), Services::default());
         reader.manage_theme = false;
         reader.ui.ribbon_collapsed = true;
         let list = |l: Option<&mail_parser::Address>| {
@@ -7804,27 +7813,47 @@ impl MailApp {
     }
 }
 
-/// The app registration fields (only while MailCraft has none for this provider) and the
-/// sign-in button. True when the button was pressed with a usable registration.
+/// The sign-in button, and the app registration fields when they are needed. With no
+/// registration at all (a build without a built-in one, and none of the person's own) the
+/// fields come first; with a built-in one they sit folded away under "Use my own ...", for
+/// people who would rather sign in through a registration of their own. True when the button
+/// was pressed with a usable registration.
 fn registration_and_button(ui: &mut egui::Ui, p: Provider, id: &mut String, secret: &mut String) -> bool {
-    let have = accounts::oauth_client(p).is_some();
-    if !have {
-        ui.label(format!("First, MailCraft needs your own {} app registration (once only).", p.name()));
-        ui.label(RichText::new("The steps are in MailCraft-sign-in-setup on the share.").font(regular(12.0)));
+    let own = accounts::has_own_oauth_client(p);
+    let builtin = accounts::builtin_client(p).is_some();
+    let fields = |ui: &mut egui::Ui, id: &mut String, secret: &mut String| {
         ui.label("Client ID");
         ui.add(egui::TextEdit::singleline(id).desired_width(320.0));
         if p.needs_secret() {
             ui.label("Client secret");
             ui.add(egui::TextEdit::singleline(secret).password(true).desired_width(320.0));
         }
+    };
+    if !own && !builtin {
+        ui.label(format!("First, MailCraft needs your own {} app registration (once only).", p.name()));
+        ui.label(
+            RichText::new(format!("Create one in {}'s developer console as a desktop app, then paste its details here.", p.name()))
+                .font(regular(12.0)),
+        );
+        fields(ui, id, secret);
+    } else if !own {
+        egui::CollapsingHeader::new(RichText::new(format!("Use my own {} app registration", p.name())).font(regular(12.0)))
+            .id_salt(("own-registration", p.name()))
+            .show(ui, |ui| {
+                ui.label(RichText::new("Optional. Leave empty to use MailCraft's.").font(regular(12.0)));
+                fields(ui, id, secret);
+            });
     }
     let client = mailcraft_core::oauth::Client {
         client_id: id.trim().to_string(),
         client_secret: Some(secret.trim().to_string()).filter(|s| !s.is_empty()),
         ..Default::default()
     };
-    let ready = have || client.is_complete(p);
-    if !have && !id.trim().is_empty() && !ready && p == Provider::Microsoft {
+    let typed = !own && !id.trim().is_empty();
+    // Something typed must be usable: falling back to the built-in one quietly would sign in
+    // through a registration the person did not mean to use.
+    let ready = if typed { client.is_complete(p) } else { own || builtin };
+    if typed && !ready && p == Provider::Microsoft {
         ui.colored_label(
             egui::Color32::from_rgb(200, 60, 40),
             "That is not an Application (client) ID: it looks like 12345678-abcd-1234-abcd-1234567890ab.",
@@ -7832,7 +7861,7 @@ fn registration_and_button(ui: &mut egui::Ui, p: Provider, id: &mut String, secr
     }
     ui.add_space(4.0);
     let pressed = ui.add_enabled(ready, egui::Button::new(RichText::new(format!("Sign in with {}", p.name())).font(semibold(13.0)))).clicked();
-    if pressed && !have {
+    if pressed && typed {
         // Keep the cleaned-up values, not whatever came along with the paste.
         let clean = mailcraft_core::oauth::Client { client_id: client.id(), client_secret: client.secret(), ..client };
         let _ = accounts::save_oauth_client(p, clean);
@@ -8587,7 +8616,7 @@ mod tests {
 
     #[test]
     fn sender_initials() {
-        assert_eq!(initials("Sam Taylor"), "ST");
+        assert_eq!(initials("Sam Taylor"), "MP");
         assert_eq!(initials("news@shop.example"), "N");
         assert_eq!(initials("Royal Mail"), "RM");
         assert_eq!(initials(""), "?");

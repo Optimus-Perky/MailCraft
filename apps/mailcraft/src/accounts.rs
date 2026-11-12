@@ -329,8 +329,32 @@ pub fn oauth_clients() -> HashMap<Provider, Client> {
     read_json("oauth.json").unwrap_or_default()
 }
 
+/// The registration to sign in with: the person's own when they have one (so sign-ins made
+/// with it keep working), else the one built into this copy of MailCraft.
 pub fn oauth_client(p: Provider) -> Option<Client> {
-    oauth_clients().remove(&p).filter(|c| c.is_complete(p))
+    pick_client(p, oauth_clients().remove(&p), builtin_client(p))
+}
+
+/// True when the person has a usable registration of their own for this provider.
+pub fn has_own_oauth_client(p: Provider) -> bool {
+    oauth_clients().remove(&p).is_some_and(|c| c.is_complete(p))
+}
+
+fn pick_client(p: Provider, own: Option<Client>, builtin: Option<Client>) -> Option<Client> {
+    own.filter(|c| c.is_complete(p)).or_else(|| builtin.filter(|c| c.is_complete(p)))
+}
+
+/// The registration compiled into this build (see build.rs), if any. Only Google so far.
+pub fn builtin_client(p: Provider) -> Option<Client> {
+    match p {
+        Provider::Google => builtin_google(option_env!("MAILCRAFT_BUILTIN_GOOGLE_ID"), option_env!("MAILCRAFT_BUILTIN_GOOGLE_SECRET")),
+        Provider::Microsoft => None,
+    }
+}
+
+fn builtin_google(id: Option<&str>, secret: Option<&str>) -> Option<Client> {
+    let c = Client { client_id: id?.to_string(), client_secret: Some(secret?.to_string()), ..Default::default() };
+    c.is_complete(Provider::Google).then_some(c)
 }
 
 pub fn save_oauth_client(p: Provider, c: Client) -> std::io::Result<()> {
@@ -339,4 +363,48 @@ pub fn save_oauth_client(p: Provider, c: Client) -> std::io::Result<()> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("oauth.json"), serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn google(id: &str, secret: &str) -> Client {
+        Client { client_id: id.into(), client_secret: Some(secret.into()), ..Default::default() }
+    }
+
+    #[test]
+    fn own_registration_wins_then_builtin() {
+        let own = google("own-1.apps.googleusercontent.com", "GOCSPX-own");
+        let built = google("built-2.apps.googleusercontent.com", "GOCSPX-built");
+        let pick = |o: Option<Client>, b: Option<Client>| pick_client(Provider::Google, o, b).map(|c| c.client_id);
+        assert_eq!(pick(Some(own.clone()), Some(built.clone())).as_deref(), Some("own-1.apps.googleusercontent.com"));
+        assert_eq!(pick(None, Some(built.clone())).as_deref(), Some("built-2.apps.googleusercontent.com"));
+        // A half-filled registration of their own does not hide the built-in one.
+        let half = Client { client_secret: None, ..own };
+        assert_eq!(pick(Some(half), Some(built)).as_deref(), Some("built-2.apps.googleusercontent.com"));
+        assert_eq!(pick(None, None), None);
+    }
+
+    #[test]
+    fn builtin_needs_both_values() {
+        assert!(builtin_google(Some("x.apps.googleusercontent.com"), Some("GOCSPX-s")).is_some());
+        assert!(builtin_google(Some("x.apps.googleusercontent.com"), None).is_none());
+        assert!(builtin_google(None, Some("GOCSPX-s")).is_none());
+        assert!(builtin_google(Some(""), Some("GOCSPX-s")).is_none());
+        // Microsoft is never built in.
+        assert!(builtin_client(Provider::Microsoft).is_none());
+    }
+
+    /// Run with MAILCRAFT_OAUTH_FILE set at build time and MAILCRAFT_EXPECT_BUILTIN_ID at run
+    /// time to prove build.rs compiled the registration in; without them, that none is.
+    #[test]
+    fn builtin_matches_the_build() {
+        let got = builtin_client(Provider::Google).map(|c| c.client_id);
+        match std::env::var("MAILCRAFT_EXPECT_BUILTIN_ID") {
+            Ok(want) => assert_eq!(got.as_deref(), Some(want.as_str())),
+            Err(_) if std::env::var_os("MAILCRAFT_OAUTH_FILE").is_none() => assert_eq!(got, None),
+            Err(_) => {}
+        }
+    }
 }

@@ -51,4 +51,6 @@ pub fn export(ext: &str, doc: &Document) -> Option<Result<Vec<u8>, String>> {
 }
 
 #[cfg(test)]
+mod hostile_tests;
+#[cfg(test)]
 mod tests;

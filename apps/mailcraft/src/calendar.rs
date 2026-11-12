@@ -2327,7 +2327,11 @@ impl MailApp {
                 ui.add(
                     egui::Label::new(
                         RichText::new(match p {
-                            Provider::Google => "Uses MailCraft's Google app registration; its Google Cloud project needs the CalDAV API turned on.",
+                            // The built-in registration's project has the CalDAV API on already.
+                            Provider::Google if !crate::accounts::has_own_oauth_client(p) && crate::accounts::builtin_client(p).is_some() => {
+                                "Signs in with Google; Google asks you to allow access to your calendars."
+                            }
+                            Provider::Google => "Uses your own Google app registration; its Google Cloud project needs the CalDAV API turned on.",
                             Provider::Microsoft => {
                                 "Uses MailCraft's Microsoft app registration; Microsoft asks you to allow access to your calendars."
                             }

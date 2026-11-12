@@ -9,8 +9,9 @@ Downloads, with checksums: **<https://altcraft.perkin.me.uk/mailcraft/>**
 
 - Any IMAP/SMTP account, set up from your address where the provider publishes its settings
   (provider autoconfig, `.well-known`, then the Mozilla ISPDB).
-- Gmail and Outlook.com sign-in (OAuth) with an app registration of your own, entered in MailCraft:
-  no shared keys are built in.
+- Gmail and Outlook.com sign-in (OAuth, in your own browser). The downloads have Google sign-in
+  built in; Outlook.com, and builds from source, use an app registration of your own, entered in
+  MailCraft.
 - Folders, a three-pane layout, conversations, a reading pane for HTML mail (in the system's own
   browser engine, locked down, with remote pictures blocked until you ask), compose, reply and
   forward with attachments, drafts, rules, categories, search.
@@ -42,6 +43,10 @@ cargo test --workspace
 Windows builds cross-compile with the `x86_64-pc-windows-gnu` target; the installer
 (`packaging/windows/`) is a WiX bundle. On Windows MailCraft needs Microsoft Edge WebView2, which
 Windows 10 and 11 already have.
+
+No app registrations are in this repository. To build one in, set `MAILCRAFT_OAUTH_FILE` to an
+`oauth.json` (`{"google": {"client_id": "...", "client_secret": "..."}}`) kept outside the tree;
+without it, MailCraft asks for the person's own registration when they first sign in.
 
 ## Licence
 

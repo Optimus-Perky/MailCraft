@@ -448,3 +448,24 @@ fn auto_hyphenation_breaks_long_words() {
     let l2 = lay(&d2);
     let _ = hyphens(&l2);
 }
+
+/// Upstream #3866 (finding 29 of #3692): proofing text found each character's run from the
+/// paragraph's first run, so a reply to a message of many runs (proofing is on while writing)
+/// took quadratic time to lay out.
+#[test]
+fn proof_text_walks_the_runs_once() {
+    use wordcraft_doc::para::Run;
+    // One run per character, every other one deleted.
+    let para = |n: usize| {
+        let mut p = Paragraph::with_text(&"a".repeat(n), CharProps::default());
+        p.runs = (0..n).map(|i| Run { len: 1, props: CharProps { del: (i % 2 == 1).then_some(0), ..Default::default() } }).collect();
+        p
+    };
+    assert_eq!(para::proof_text(&para(5)), "a\u{1}a\u{1}a");
+    let big = para(100_000);
+    let t = std::time::Instant::now();
+    let text = para::proof_text(&big);
+    let took = t.elapsed();
+    assert_eq!(text.len(), 100_000);
+    assert!(took < std::time::Duration::from_secs(2), "proof_text of 100 000 runs took {took:?}");
+}

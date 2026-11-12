@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use wordcraft_doc::numbering::{AbstractNum, Counters, Level, ListKind, Num, levels_for};
-use wordcraft_doc::para::{InlineObject, OBJ};
+use wordcraft_doc::para::{InlineObject, OBJ, Run};
 use wordcraft_doc::props::{
     Border, BorderStyle, Borders, CellProps, CharProps, LineSpacing, NumRef, ParaProps, RowProps, TextColor, Underline, VMerge, VertAlign,
 };
@@ -238,6 +238,12 @@ impl FTable {
     /// After an importer that gives `rowspan` but no placeholder cells (HTML): insert covered
     /// cells into the rows below each spanning cell.
     pub fn insert_covered(&mut self) {
+        // Each spanning cell touches up to `rowspan - 1` rows below it; a table of many rows each
+        // carrying a large rowspan would otherwise be O(rows × rowspan) covered cells, each of
+        // which becomes a document cell downstream. Cap the total touched so a small file can't
+        // multiply into a huge table, whatever the rowspans claim (upstream #1235).
+        const MAX_COVERED_WORK: usize = 1 << 17;
+        let mut work = 0usize;
         let nrows = self.rows.len();
         for r in 0..nrows {
             let mut g = 0usize;
@@ -246,6 +252,10 @@ impl FTable {
                 let (span, rs, covered) = (c.colspan.clamp(1, 63) as usize, c.rowspan.clamp(1, 1000) as usize, c.covered);
                 if rs > 1 && !covered {
                     for k in 1..rs {
+                        work += 1;
+                        if work > MAX_COVERED_WORK {
+                            return;
+                        }
                         let Some(row) = self.rows.get_mut(r + k) else { break };
                         // Find the index in that row at grid column `g`.
                         let mut x = 0usize;
@@ -350,6 +360,28 @@ fn rule_borders() -> Borders {
     Borders { bottom: Some(Border { style: BorderStyle::Single, width: 0.75, color: Some(Rgb(0xA0, 0xA0, 0xA0)), space: 1.0 }), ..Default::default() }
 }
 
+/// Append text (without object characters) or one inline object to the end of `p` (upstream
+/// #355: going through `Paragraph::insert_text` rescans every earlier run, quadratic in their
+/// number). The caller normalises once at the end.
+fn append(p: &mut Paragraph, text: &str, props: &CharProps, obj: Option<InlineObject>) {
+    let piece = match obj {
+        Some(o) => {
+            p.objects.push(o);
+            OBJ.to_string()
+        }
+        None if text.contains(OBJ) => text.chars().filter(|c| *c != OBJ).collect(),
+        None => text.to_string(),
+    };
+    if piece.is_empty() {
+        return;
+    }
+    p.text.push_str(&piece);
+    match p.runs.last_mut() {
+        Some(last) if last.props == *props => last.len += piece.len(),
+        _ => p.runs.push(Run { len: piece.len(), props: props.clone() }),
+    }
+}
+
 struct Builder<'a> {
     doc: &'a mut Document,
 }
@@ -396,8 +428,8 @@ impl Builder<'_> {
         if p.borders.is_some() && p.kind != Kind::Rule {
             out.props.borders = p.borders;
         }
+        // Inlines are appended in order, so the runs are built directly (upstream #355).
         for i in &p.inlines {
-            let end = out.len();
             match i {
                 Inline::Text(t, f) => {
                     let t = clean_text(t);
@@ -405,21 +437,22 @@ impl Builder<'_> {
                     if p.kind == Kind::Code && cp.font.as_deref() == Some(MONO_FONT) {
                         cp.font = None;
                     }
-                    let _ = out.insert_text(end, &t, &cp);
+                    append(&mut out, &t, &cp, None);
                 }
                 Inline::Image(img) => {
                     let key = self.doc.add_media(img.data.to_vec(), &img.ext);
                     let (w, h) = (finite_or(img.w, 72.0).clamp(1.0, 1584.0), finite_or(img.h, 72.0).clamp(1.0, 1584.0));
                     let obj = InlineObject::Image { media: key, w, h, alt: img.alt.clone(), float: Default::default(), crop: [0.0; 4] };
-                    let _ = out.insert_object(end, obj, &CharProps::default());
+                    append(&mut out, "", &CharProps::default(), Some(obj));
                 }
                 Inline::Anchor(name) => {
-                    let _ = out.insert_object(end, InlineObject::BookmarkStart { name: name.clone() }, &CharProps::default());
-                    let e2 = out.len();
-                    let _ = out.insert_object(e2, InlineObject::BookmarkEnd { name: name.clone() }, &CharProps::default());
+                    append(&mut out, "", &CharProps::default(), Some(InlineObject::BookmarkStart { name: name.clone() }));
+                    append(&mut out, "", &CharProps::default(), Some(InlineObject::BookmarkEnd { name: name.clone() }));
                 }
             }
         }
+        out.normalize();
+        out.touch();
         out
     }
 
@@ -543,7 +576,10 @@ impl Builder<'_> {
         }
         let cols = t.cols().clamp(1, wordcraft_doc::table::MAX_COLS);
         let width = self.doc.last_section.text_width().max(72.0);
-        let mut tb = Table::new(rows.len(), cols, width);
+        // One template row for the grid widths and props; the real rows are built below. Sizing
+        // it to `rows.len()` would allocate a full rows × cols cell grid only to clear it
+        // (upstream #1235).
+        let mut tb = Table::new(1, cols, width);
         if t.widths.len() == cols && t.widths.iter().all(|w| w.is_finite() && *w > 1.0) {
             tb.grid = t.widths.iter().map(|w| w.clamp(6.0, 1584.0)).collect();
         }

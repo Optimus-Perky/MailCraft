@@ -387,7 +387,8 @@ impl WordApp {
         }
         dialogs::show(self, &ctx);
         keys::global_shortcuts(self, &ctx);
-        if let Some(url) = self.canvas.open_url.take() {
+        // Only web and email links reach the system, whoever asked (upstream #72).
+        if let Some(url) = self.canvas.open_url.take().filter(|u| wordcraft_doc::link::is_web_or_mail_link(u)) {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
         let title = format!("{}{} - WordCraft", self.title_stem(), if self.session.dirty { " •" } else { "" });

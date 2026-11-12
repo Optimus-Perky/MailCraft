@@ -514,8 +514,11 @@ fn mouse(app: &mut WordApp, ui: &Ui, resp: &egui::Response, rects: &[Rect], layo
         {
             if let Some(name) = link.strip_prefix('#') {
                 let _ = app.run("edit.goto", json!({"bookmark": name}));
-            } else {
+            } else if wordcraft_doc::link::is_web_or_mail_link(&link) {
                 app.canvas.open_url = Some(link);
+            } else {
+                // A message can't launch `file:` paths, shares or protocol handlers (upstream #72).
+                app.status("Only web (http, https) and email (mailto) links can be followed");
             }
             return;
         }
