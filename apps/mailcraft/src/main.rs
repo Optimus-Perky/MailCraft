@@ -10,6 +10,7 @@ mod accounts;
 mod calendar;
 mod darkmail;
 mod foldertree;
+mod headertext;
 mod history;
 #[cfg(test)]
 mod hostile;
@@ -779,7 +780,7 @@ fn day_label(d: &Option<String>, today: chrono::NaiveDate) -> String {
     }
 }
 
-/// Up to two initials for a sender picture ("Sam Taylor" MP, "news@shop.example" N).
+/// Up to two initials for a sender picture ("Sam Taylor" ST, "news@shop.example" N).
 fn initials(name: &str) -> String {
     let name = name.split('@').next().unwrap_or(name);
     let words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
@@ -4251,11 +4252,7 @@ impl MailApp {
                             });
                         });
                         ui.add_space(8.0);
-                        ui.label(RichText::new(&open.subject).font(semibold(18.0)).color(t.text));
-                        ui.add_space(6.0);
-                        ui.label(RichText::new(&open.from).font(semibold(13.0)).color(t.text));
-                        ui.label(RichText::new(format!("To: {}", open.to)).font(regular(12.0)).color(t.text_dim));
-                        ui.label(RichText::new(&open.date).font(regular(12.0)).color(t.text_dim));
+                        header_lines(ui, t, open, "popout");
                         if open.remote && !open.show_remote {
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
@@ -6178,7 +6175,12 @@ impl MailApp {
             || self.moving.is_some()
             || self.dialog.is_some()
             || self.picked.len() > 1
-            || egui::Popup::is_any_open(ui.ctx())
+            || (egui::Popup::is_any_open(ui.ctx())
+                // A header line's own menu opens above the pointer, clear of the mail view.
+                && !self
+                    .open
+                    .as_ref()
+                    .is_some_and(|o| HEADER_FIELDS.iter().any(|f| headertext::menu_open(ui.ctx(), header_id(o, "pane", f)))))
             || self.open.is_none();
         #[cfg(any(windows, target_os = "linux"))]
         {
@@ -6230,11 +6232,7 @@ impl MailApp {
             };
             egui::Frame::NONE.fill(t.ribbon).inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(&open.subject).font(semibold(18.0)).color(t.text));
-                ui.add_space(6.0);
-                ui.label(RichText::new(&open.from).font(semibold(13.0)).color(t.text));
-                ui.label(RichText::new(format!("To: {}", open.to)).font(regular(12.0)).color(t.text_dim));
-                ui.label(RichText::new(&open.date).font(regular(12.0)).color(t.text_dim));
+                header_lines(ui, t, open, "pane");
                 if open.remote && !open.show_remote {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -8537,6 +8535,22 @@ fn main() -> eframe::Result {
     eframe::run_native("MailCraft", options, Box::new(move |cc| Ok(Box::new(App(MailApp::new(&cc.egui_ctx, link, single))))))
 }
 
+/// Subject, from, to and date above a message: selectable, copyable (Ctrl+C or right-click).
+const HEADER_FIELDS: [&str; 4] = ["subject", "from", "to", "date"];
+
+fn header_id(open: &OpenMessage, place: &str, field: &str) -> egui::Id {
+    egui::Id::new(("mc-header", place, open.folder.as_str(), open.uid, field))
+}
+
+fn header_lines(ui: &mut egui::Ui, t: &Tokens, open: &OpenMessage, place: &str) {
+    let id = |field: &str| header_id(open, place, field);
+    headertext::line(ui, id("subject"), &open.subject, semibold(18.0), t.text);
+    ui.add_space(6.0);
+    headertext::line(ui, id("from"), &open.from, semibold(13.0), t.text);
+    headertext::line(ui, id("to"), &format!("To: {}", open.to), regular(12.0), t.text_dim);
+    headertext::line(ui, id("date"), &open.date, regular(12.0), t.text_dim);
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -8616,7 +8630,7 @@ mod tests {
 
     #[test]
     fn sender_initials() {
-        assert_eq!(initials("Sam Taylor"), "MP");
+        assert_eq!(initials("Sam Taylor"), "ST");
         assert_eq!(initials("news@shop.example"), "N");
         assert_eq!(initials("Royal Mail"), "RM");
         assert_eq!(initials(""), "?");
